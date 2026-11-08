@@ -11,7 +11,7 @@ app_port: 7860
 
 A small, independent browser-side research lab inspired by [wgpuclustertest](https://github.com/Wuhpondiscord/wgpuclustertest).
 
-Experiments: adapter capabilities, bounded vector addition (same 64-thread workgroup shape as the cluster), GPU readback, optional GPU timestamp queries, and instrumented WGSL execution counters. No accounts, coordinator, P2P network, or ML model downloads.
+Additional experiments: [GPU residency and checkpoint testing](./residency.html).\n\nExperiments: adapter capabilities, bounded vector addition (same 64-thread workgroup shape as the cluster), GPU readback, optional GPU timestamp queries, and instrumented WGSL execution counters. No accounts, coordinator, P2P network, or ML model downloads.
 
 The Hugging Face Docker Space serves static files; all GPU work runs locally in the visiting browser. Results stay local unless manually exported. Requires WebGPU and a secure context.
 
