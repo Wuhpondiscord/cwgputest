@@ -178,3 +178,151 @@ async function digest(bytes){const hash=new Uint8Array(await crypto.subtle.diges
 $('make').onclick=()=>execute($('make'),async()=>{const c=config(),{d,p,adapterInfo}=await device();try{const owned=[],bytes=c.elements*4;if(bytes>d.limits.maxStorageBufferBindingSize)throw Error('Buffer limit exceeded');const a=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned),b=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned);try{const initial=init(c.elements);d.queue.writeBuffer(a,0,initial);let src=a,dst=b;for(let i=0;i<c.dispatches;i++){const enc=d.createCommandEncoder();step(d,p,src,dst,c.elements,enc);d.queue.submit([enc.finish()]);[src,dst]=[dst,src]}const raw=await read(d,src,0,bytes),mismatches=check(raw,initial,c.dispatches);if(mismatches)throw Error('Checkpoint source invalid: '+mismatches+' mismatches');const obj={format:'cwgpu-portable-checkpoint',version:1,createdAt:new Date().toISOString(),elements:c.elements,completedDispatches:c.dispatches,shader:'vector-add-one-v1',encoding:'float32-le-base64',sha256:await digest(raw),data:base64(raw),sourceAdapter:adapterInfo};download('cwgpu-checkpoint-'+Date.now()+'.json',JSON.stringify(obj),'application/json');$('status').textContent='Exported '+bytes+' bytes of verified GPU state; SHA-256 '+obj.sha256}catch(e){throw e}finally{owned.forEach(x=>x.destroy())}}finally{d.destroy()}});
 $('restore').onclick=()=>execute($('restore'),async()=>{const file=$('import').files?.[0];if(!file)throw Error('Choose a checkpoint JSON file');if(file.size>8000000)throw Error('Checkpoint JSON exceeds 8 MB safety limit');const cp=JSON.parse(await file.text());if(cp.format!=='cwgpu-portable-checkpoint'||cp.version!==1||cp.shader!=='vector-add-one-v1'||cp.encoding!=='float32-le-base64')throw Error('Unsupported checkpoint format');if(!Number.isSafeInteger(cp.elements)||cp.elements<1||cp.elements>500000||!Number.isSafeInteger(cp.completedDispatches)||cp.completedDispatches<0||cp.completedDispatches>100000)throw Error('Invalid checkpoint dimensions');const raw=unbase64(cp.data);if(raw.byteLength!==cp.elements*4)throw Error('Checkpoint byte count mismatch');const hash=await digest(raw);if(hash!==cp.sha256)throw Error('Checkpoint SHA-256 mismatch');const {d,adapterInfo}=await device();try{if(raw.byteLength>d.limits.maxStorageBufferBindingSize)throw Error('Destination GPU limit exceeded');const owned=[],gpu=buf(d,raw.byteLength,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned);try{const start=now();d.queue.writeBuffer(gpu,0,raw);await d.queue.onSubmittedWorkDone();const restoreMs=now()-start,verifyStart=now(),out=await read(d,gpu,0,raw.byteLength),verificationMs=now()-verifyStart,initial=init(cp.elements),mismatches=check(out,initial,cp.completedDispatches);const result={sourceAdapter:cp.sourceAdapter,destinationAdapter:adapterInfo,elements:cp.elements,completedDispatches:cp.completedDispatches,sha256:hash,restoreMs:round(restoreMs),verificationMs:round(verificationMs),mismatches,valid:mismatches===0};$('status').textContent=result.valid?'Portable checkpoint restored and validated.':'Checkpoint restore failed validation.';$('summary').textContent=JSON.stringify(result,null,2);$('details').textContent='Import verifies SHA-256 and exact GPU float32 output. This is manual cross-browser buffer restoration, not live execution migration.'}finally{owned.forEach(x=>x.destroy())}}finally{d.destroy()}});
 $('export').onclick=()=>{if(latest)download('cwgpu-advanced-'+Date.now()+'.json',JSON.stringify(latest,null,2),'application/json')};
+
+
+/* Comprehensive, opt-in same-browser benchmark. Cross-device transfer cannot be
+   automatically tested without a second node or a transport channel. */
+function summarizeSuite(rows){
+ const groups={};
+ for(const row of rows){(groups[row.label]??=[]).push(row)}
+ const out={};
+ for(const [label,items] of Object.entries(groups)){
+  out[label]={
+   samples:items.length,allValid:items.every(x=>x.valid===true),
+   elapsedMs:stats(items.map(x=>x.elapsedMs).filter(Number.isFinite)),
+   snapshotMs:stats(items.map(x=>x.snapshotMs).filter(Number.isFinite)),
+   restoreMs:stats(items.map(x=>x.restoreMs).filter(Number.isFinite)),
+   verificationMs:stats(items.map(x=>x.verificationMs).filter(Number.isFinite)),
+   checkpointMs:stats(items.map(x=>x.checkpointMs).filter(Number.isFinite)),
+   checkpointCount:items[0]?.checkpointCount??null,
+   checkpointBytes:items[0]?.checkpointBytes??null
+  };
+ }
+ return out;
+}
+async function localCheckpointResume(d,p,n,prior,extra){
+ const owned=[],bytes=n*4,initial=init(n);
+ try{
+  const a=buf(d,bytes,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned),
+        b=buf(d,bytes,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned),
+        restored=buf(d,bytes,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned),
+        next=buf(d,bytes,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned);
+  d.queue.writeBuffer(a,0,initial);
+  let source=a,target=b;
+  const computeStart=now(),enc=d.createCommandEncoder();
+  for(let i=0;i<prior;i++){step(d,p,source,target,n,enc);[source,target]=[target,source]}
+  d.queue.submit([enc.finish()]);
+  const checkpoint=await read(d,source,0,bytes),captureAndComputeMs=now()-computeStart;
+  const cpMismatches=check(checkpoint,initial,prior);
+  const checkpointSha256=await digest(checkpoint);
+  // Simulate a portable serialization round-trip. No network or second GPU.
+  const parsed=unbase64(base64(checkpoint));
+  if(parsed.length!==bytes||await digest(parsed)!==checkpointSha256)throw Error('Checkpoint round-trip integrity mismatch');
+  const restoreStart=now();d.queue.writeBuffer(restored,0,parsed);await d.queue.onSubmittedWorkDone();
+  const restoreMs=now()-restoreStart;
+  const restoredRaw=await read(d,restored,0,bytes),restoreMismatches=check(restoredRaw,initial,prior);
+  source=restored;target=next;
+  const resumeStart=now(),resumeEnc=d.createCommandEncoder();
+  for(let i=0;i<extra;i++){step(d,p,source,target,n,resumeEnc);[source,target]=[target,source]}
+  d.queue.submit([resumeEnc.finish()]);
+  const finished=await read(d,source,0,bytes),resumeMs=now()-resumeStart;
+  const mismatches=check(finished,initial,prior+extra);
+  return {label:'same-device checkpoint serialize restore resume',elements:n,priorDispatches:prior,resumedDispatches:extra,
+   checkpointSha256,checkpointBytes:bytes,captureAndComputeMs:round(captureAndComputeMs),
+   restoreMs:round(restoreMs),resumeMs:round(resumeMs),restoreMismatches,checkpointMismatches:cpMismatches,
+   mismatches,valid:cpMismatches===0&&restoreMismatches===0&&mismatches===0};
+ }finally{owned.forEach(b=>b.destroy())}
+}
+$('runall').onclick=()=>execute($('runall'),async()=>{
+ const c=config(),allButton=$('runall'),exportButton=$('export');
+ exportButton.disabled=true;latest=null;
+ // Save incomplete results on errors so the user can still export diagnostics.
+ const report={version:4,kind:'automated-webgpu-suite',createdAt:new Date().toISOString(),
+  configuration:{...c,frequencyDispatches:Math.max(32,c.dispatches)},
+  environment:{userAgent:navigator.userAgent,deviceMemoryGiB:navigator.deviceMemory??null,
+   hardwareConcurrency:navigator.hardwareConcurrency??null},
+  adapterInfo:null,sections:{},failures:[],notes:[
+   'Runs entirely in this browser; no results are sent to a server.',
+   'Manual cross-browser import/export is NOT automatically exercised.',
+   'The automatic resume test uses a second GPUBuffer on the same WebGPU device.',
+   'Wall-clock timings include browser scheduling and synchronization.',
+   'Legacy chunk scaling uses independent sequential readbacks.',
+   'Validated frequency excludes an intermediate snapshot at the final dispatch.'
+  ]};
+ const sections=[
+  {id:'dispatch',title:'Dispatch submission and readback',make:()=>[
+   ...['separate','batched','readback-each'].map(mode=>({label:mode,fn:(d,p)=>compute(d,p,c.elements,c.dispatches,mode)}))]},
+  {id:'legacyChunkScaling',title:'Sequential chunk scaling',make:()=>[1,4,16,64].map(parts=>({
+   label:parts+' chunks',fn:(d)=>checkpoint(d,c.elements,parts)}))},
+  {id:'legacySizeScaling',title:'Four-chunk state size scaling',make:()=>[65536,131072,262144,500000].map(n=>({
+   label:n+' elements',fn:(d)=>checkpoint(d,n,4)}))},
+  {id:'legacyFrequency',title:'Original checkpoint frequency',make:()=>[0,16,4,1].map(interval=>({
+   label:interval===0?'none':('every '+interval),fn:(d,p)=>compute(d,p,c.elements,c.dispatches,'frequency',interval)}))},
+  {id:'captureStrategies',title:'Checkpoint capture strategy comparison',make:()=>{
+   const cases=[];for(const parts of [1,4,16,64])for(const method of ['sequential','batched-copies','single-readback-cpu-split'])
+    cases.push({label:method+' / '+parts+' chunks',fn:(d)=>captureComparison(d,c.elements,parts,method)});
+   return cases}},
+  {id:'sizeByStrategy',title:'State size by capture strategy',make:()=>{
+   const cases=[];for(const n of [65536,131072,262144,500000])
+    for(const method of ['sequential','batched-copies','single-readback-cpu-split']){
+     const parts=method==='sequential'?1:16;
+     cases.push({label:n+' elements / '+method,fn:(d)=>captureComparison(d,n,parts,method)});
+    }return cases}},
+  {id:'validatedFrequency',title:'Validated intermediate checkpoint frequency',make:()=>[0,16,4,1].map(interval=>({
+   label:interval===0?'none':('every '+interval),
+   fn:(d,p)=>frequencyMeasured(d,p,c.elements,Math.max(32,c.dispatches),interval)}))},
+  {id:'resume',title:'Same-device checkpoint integrity and resumed GPU computation',make:()=>[{
+   label:'restore and continue',fn:(d,p)=>localCheckpointResume(d,p,c.elements,c.dispatches,Math.min(16,c.dispatches))}]}
+ ];
+ let ctx=null,completed=0;
+ const total=sections.reduce((n,s)=>n+s.make().length*(c.warmups+c.trials),0);
+ function render(){
+  report.completedCases=completed;report.totalCases=total;
+  report.completedSections=Object.values(report.sections).filter(x=>x.status==='completed').length;
+  report.allValid=report.failures.length===0&&report.completedSections===sections.length&&
+   Object.values(report.sections).every(x=>x.records.every(r=>r.valid));
+  latest=report;exportButton.disabled=false;
+  $('summary').textContent=JSON.stringify({completedCases:completed,totalCases:total,
+   sections:Object.fromEntries(Object.entries(report.sections).map(([id,s])=>[id,{status:s.status,
+   valid:s.records.every(r=>r.valid),cases:s.records.length,summary:s.summary??null}])),
+   failures:report.failures},null,2);
+  $('details').textContent=JSON.stringify({sections:report.sections,notes:report.notes},null,2);
+ }
+ try{
+  ctx=await device();report.adapterInfo=ctx.adapterInfo;
+  if(500000*4>ctx.d.limits.maxStorageBufferBindingSize||500000*4>ctx.d.limits.maxBufferSize)
+   throw Error('Adapter does not support the 500,000-element fixed-size tests');
+  for(const sec of sections){
+   const cases=sec.make(),records=[],section={title:sec.title,status:'running',records};
+   report.sections[sec.id]=section;
+   for(let roundNo=0;roundNo<c.warmups+c.trials;roundNo++){
+    // Reverse whole case order every other round to reduce systematic order effects.
+    const order=roundNo%2?[...cases].reverse():cases;
+    for(const test of order){
+     $('status').textContent='Full suite: '+sec.title+' — '+(completed+1)+'/'+total+
+      ' runs; measured round '+Math.max(0,roundNo-c.warmups+1)+'/'+c.trials;
+     try{
+      const row=await test.fn(ctx.d,ctx.p);
+      if(!row.valid)throw Error('Output validation failed ('+(row.mismatches??'unknown')+' mismatches)');
+      if(roundNo>=c.warmups)records.push({...row,label:test.label,trial:roundNo-c.warmups+1});
+     }catch(e){
+      const failure={section:sec.id,case:test.label,round:roundNo+1,error:String(e)};
+      report.failures.push(failure);section.status='failed';throw Error(sec.title+' / '+test.label+': '+e);
+     }
+     completed++;
+     if(completed%4===0){render();await pause()}
+    }
+   }
+   section.summary=summarizeSuite(records);section.status='completed';
+   render();await pause();
+  }
+  report.finishedAt=new Date().toISOString();render();
+  $('status').textContent='Full suite complete: '+completed+'/'+total+' runs, '+
+   sections.length+' sections; all measured cases valid. Export combined JSON.';
+ }catch(e){
+  report.finishedAt=new Date().toISOString();
+  report.failures.push({section:'suite',error:String(e)});
+  render();$('status').textContent='Full suite stopped: '+String(e)+
+   '. Partial results can be exported for troubleshooting.';
+ }finally{if(ctx)ctx.d.destroy();exportButton.disabled=!latest;allButton.disabled=false}
+});
