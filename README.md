@@ -41,3 +41,8 @@ Open `/advanced.html` in the Space to run batched-versus-separate dispatches, sy
 ## Experimental findings
 
 See [FINDINGS.md](./FINDINGS.md) for dated, user-measured results, methodology, limitations, and next experiments. The advanced page includes a checkpoint capture strategy comparison of sequential per-chunk readbacks, single-submission batched GPU copies, and single GPU readback followed by CPU-side chunking. All configurations restore to GPU and validate every element.
+
+
+## One-click full test suite
+
+On `/advanced.html`, select **Run full test suite** to run every browser-local benchmark group sequentially: dispatch batching/readback, legacy chunk/size/frequency scaling, checkpoint capture strategies, larger-state strategies, validated checkpoint frequency, and same-device checkpoint integrity/restore/resumed compute. The trial/warmup controls apply to each case. At defaults (5 trials, 2 warmups) there are 308 case executions (including warmups). The every-16 checkpoint frequency case uses at least 32 dispatches. Progress, per-case correctness, timing summaries, raw results, device metadata, and failures are included in a single exportable JSON report; partial results remain exportable on failure. The suite has no network connection and does not automatically test a second physical device. Manual cross-device checkpoint export/import is available separately.
