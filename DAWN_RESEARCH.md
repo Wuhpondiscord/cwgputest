@@ -103,3 +103,29 @@ Expected validation and map cancellation **do not test the native D3D12 failure-
 2. Add safe mapping lifecycle transitions: `unmap` after successful read, `destroy` before/after completed maps, and expected rejection for duplicate pending mapping, with clean isolated devices on errors.
 3. For native security hypotheses, use a local Dawn native build with injected D3D12 mapping failure and instrumented lock balancing; then injected fence event registration failure. Browser JavaScript cannot verify their internal invariants.
 4. Audit native write-texture validation and alignment preconditions with focused unit tests and fuzzing. No oversize or malformed-wire stress testing belongs in the public Space.
+
+
+## Follow-up suite implementation (2026-11-08, awaiting browser measurements)
+
+A second independently exportable suite has been added to `/dawn.html`. Press **Run follow-up tests**, then export `dawn-followup-*.json`.
+
+### Performance
+
+Run 1, 4, 12 and 32 readback buffers of 4 KiB each, using sequential mapping/submission versus one batched submission and concurrent mapping. Default 2 warmup rounds and 5 measured rounds. Configuration accepts 1–20 measured trials and 0–5 warmups. Reverse size order on alternating rounds; alternate method order to reduce first-test bias. Verify all 1024 `u32` values in **every** buffer, not just the first element. Capture individual wall-clock samples, number of submissions and map calls, and aggregate medians, means, min/max and p95 plus median sequential/batched speedup. The maximum data copied per configuration is 128 KiB; the largest individual GPU buffer is 4 KiB. Each configuration includes resource allocation and cleanup, so timings are application end-to-end, not pure GPU-only.
+
+**Caveat:** the round alternation is deterministic and not a fully randomized or temperature-controlled methodology. The tests use multiple buffers to study mapping synchronization; they do not expose Dawn internal tracing.
+
+### Security / lifecycle
+
+Five new bounded cases:
+- `unmap()` while `mapAsync()` is pending should abort the pending mapping.
+- A second `mapAsync()` while the first is pending should be rejected while the first one still completes normally.
+- A successful `mapAsync()`, `unmap()`, and second mapping should validate exact returned data.
+- `destroy()` after a successful mapping should prevent subsequent mapped-range retrieval.
+- A `mapAsync()` on an already destroyed buffer should reject.
+
+All record `pass`, `unexpected-acceptance`, or `inconclusive` with observed errors and elapsed time. A passing test is evidence of limited API-level rejection or lifecycle behavior only. **Neither this suite nor its original predecessor can confirm the suspected native D3D12 residency-lock leak or ignored fence HRESULT.**
+
+### Still required for native candidates
+
+A local Windows/Dawn D3D12 build with controllable `ID3D12Resource::Map` and `ID3D12Fence::SetEventOnCompletion` failure is required to determine whether the suspected error-handling defects are real and observable. Native test coverage should inspect resource-lock counters and bounded waiter error propagation respectively. No native fault injection has been executed or claimed.
