@@ -78,6 +78,99 @@ $('capturecompare').onclick=()=>execute($('capturecompare'),()=>bench('checkpoin
  return rows;
 }));
 
+
+async function frequencyMeasured(d,p,n,steps,interval){
+ const owned=[],bytes=n*4,expected=init(n);let source,target,checkpointCount=0,checkpointMs=0,checkpointBytes=0;
+ try{
+  source=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned);
+  target=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned);
+  d.queue.writeBuffer(source,0,expected);
+  const start=now();
+  for(let i=0;i<steps;i++){
+   const enc=d.createCommandEncoder();step(d,p,source,target,n,enc);d.queue.submit([enc.finish()]);
+   [source,target]=[target,source];
+   // Do not count a snapshot at the final dispatch: a final readback is common to every mode.
+   if(interval>0&&(i+1)%interval===0&&i+1<steps){
+    const t=now(),data=await read(d,source,0,bytes);
+    checkpointMs+=now()-t;checkpointCount++;checkpointBytes+=data.byteLength;
+    const cpMismatches=check(data,expected,i+1);
+    if(cpMismatches)throw Error('Intermediate checkpoint validation failed after dispatch '+(i+1));
+   }
+  }
+  const final=await read(d,source,0,bytes),elapsedMs=now()-start,mismatches=check(final,expected,steps);
+  return {interval,dispatches:steps,checkpointCount,checkpointBytes,
+   checkpointMs:round(checkpointMs),elapsedMs:round(elapsedMs),overheadScope:'Intermediate snapshots only; final readback is common',
+   mismatches,valid:mismatches===0};
+ }finally{owned.forEach(b=>b.destroy())}
+}
+async function restoreAndContinue(){
+ const file=$('import').files?.[0];
+ if(!file)throw Error('Select a portable checkpoint JSON file first');
+ if(file.size>8000000)throw Error('Checkpoint exceeds the 8 MB limit');
+ const cp=JSON.parse(await file.text());
+ if(cp.format!=='cwgpu-portable-checkpoint'||cp.version!==1||cp.shader!=='vector-add-one-v1'||cp.encoding!=='float32-le-base64')
+  throw Error('Unknown checkpoint format or shader');
+ if(!Number.isSafeInteger(cp.elements)||cp.elements<1||cp.elements>500000||
+    !Number.isSafeInteger(cp.completedDispatches)||cp.completedDispatches<0||cp.completedDispatches>100000)
+  throw Error('Invalid checkpoint configuration');
+ const extra=value('resumeDispatches',1,64);
+ const raw=unbase64(cp.data);
+ if(raw.byteLength!==cp.elements*4||await digest(raw)!==cp.sha256)throw Error('Checkpoint size or hash mismatch');
+ const {d,p,adapterInfo}=await device(),owned=[];
+ try{
+  if(raw.byteLength>d.limits.maxStorageBufferBindingSize||raw.byteLength>d.limits.maxBufferSize)
+   throw Error('Destination device storage limit exceeded');
+  const sourceBuffer=buf(d,raw.byteLength,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned),
+        targetBuffer=buf(d,raw.byteLength,U.STORAGE|U.COPY_SRC|U.COPY_DST,owned);
+  const restoreStart=now();d.queue.writeBuffer(sourceBuffer,0,raw);await d.queue.onSubmittedWorkDone();
+  const restoreMs=now()-restoreStart;
+  const initial=init(cp.elements);
+  // Validate the actual restored GPU state before resuming execution.
+  const before=await read(d,sourceBuffer,0,raw.byteLength);
+  const restoreMismatches=check(before,initial,cp.completedDispatches);
+  if(restoreMismatches)throw Error('Restored contents failed GPU readback validation');
+  let source=sourceBuffer,target=targetBuffer;
+  const start=now(),enc=d.createCommandEncoder();
+  for(let i=0;i<extra;i++){step(d,p,source,target,cp.elements,enc);[source,target]=[target,source]}
+  d.queue.submit([enc.finish()]);
+  const final=await read(d,source,0,raw.byteLength),executionMs=now()-start,
+        mismatches=check(final,initial,cp.completedDispatches+extra);
+  const result={kind:'portable-checkpoint-resume',createdAt:new Date().toISOString(),
+   sourceAdapter:cp.sourceAdapter,destinationAdapter:adapterInfo,elements:cp.elements,
+   checkpointHash:cp.sha256,priorDispatches:cp.completedDispatches,resumedDispatches:extra,
+   totalDispatches:cp.completedDispatches+extra,restoreMs:round(restoreMs),
+   executionAndFinalReadbackMs:round(executionMs),restoreMismatches,mismatches,valid:mismatches===0};
+  $('status').textContent=result.valid?'Checkpoint restored, GPU execution resumed, output validated.':'Resumed computation failed validation.';
+  $('summary').textContent=JSON.stringify(result,null,2);
+  $('details').textContent='This resumes a deterministic vector-add workload from a saved GPU buffer; it is not arbitrary live kernel-state migration.';
+  latest={version:3,kind:'portable-checkpoint-resume',createdAt:result.createdAt,
+    configuration:{elements:cp.elements,priorDispatches:cp.completedDispatches,resumedDispatches:extra},
+    adapterInfo,summary:result,records:[result]};
+  $('export').disabled=false;
+ }finally{owned.forEach(b=>b.destroy());d.destroy()}
+}
+$('sizecompare').onclick=()=>execute($('sizecompare'),()=>bench('state size by capture strategy',async(d,p,c,i)=>{
+ const sizes=[65536,131072,262144,500000],rows=[];
+ if(i%2)sizes.reverse();
+ for(const n of sizes){
+  if(n*4>d.limits.maxStorageBufferBindingSize||n*4>d.limits.maxBufferSize)throw Error('Device cannot allocate '+n+' elements');
+  const methods=i%2?['single-readback-cpu-split','batched-copies','sequential']:['sequential','batched-copies','single-readback-cpu-split'];
+  for(const method of methods){
+   const parts=method==='sequential'?1:16;
+   rows.push({...await captureComparison(d,n,parts,method),
+    label:n+' elements / '+method+(method==='sequential'?' (1 chunk)':' (16 chunks)')});
+  }
+ }
+ return rows;
+}));
+$('frequency2').onclick=()=>execute($('frequency2'),()=>bench('checkpoint frequency with intermediate validation',async(d,p,c,i)=>{
+ const intervals=[0,16,4,1],rows=[];if(i%2)intervals.reverse();
+ for(const interval of intervals)rows.push({...await frequencyMeasured(d,p,c.elements,c.dispatches,interval),
+    label:interval===0?'none':('every '+interval)});
+ return rows;
+}));
+$('resume').onclick=()=>execute($('resume'),restoreAndContinue);
+
 function download(name,body,type){const url=URL.createObjectURL(new Blob([body],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 function base64(bytes){let result='';for(let i=0;i<bytes.length;i+=8192)result+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(result)}
 function unbase64(s){const raw=atob(s),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
