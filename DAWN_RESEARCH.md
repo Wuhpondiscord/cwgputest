@@ -202,3 +202,31 @@ The existing `/dawn.html` now embeds `dawn-overlap.js`, providing a blocking vs.
 The user reran the 40-sample follow-up on Chrome 157 / NVIDIA Lovelace (5 trials, 2 warmups). **40/40 readback cases valid, all five mapping lifecycle tests passed, no failures**. Medians (sequential vs batched): 1 buffer 4.0/3.2 ms (1.25x); 4 buffers 12.3/3.3 ms (3.73x); 12 buffers 33.8/3.0 ms (11.27x); 32 buffers 88.7/3.2 ms (27.72x). The 32-buffer improvement remains robust across both runs, but outliers and browser scheduling affect per-run ratios.
 
 The first attempt to run the new `dawn-checkpoint-overlap` experiment stopped at shader compilation with `Error: 'target' is a reserved keyword`. No overlap measurements were recorded. `dawn-overlap.js` was corrected to use WGSL identifier `outputState`; setup errors are now recorded in exported report `errors`. The corrected shader has **not yet been validated by a browser run**.
+
+
+## First successful overlapped checkpoint benchmark (2026-11-08 17:29 UTC)
+
+User-provided browser report `dawn-checkpoint-overlap` v1 from Chrome 157, Windows `Windows NT 10.0` UA, NVIDIA Lovelace adapter. Configuration: 65,536 `u32` elements (256 KiB per checkpoint), 32 dependent compute dispatches, checkpoint every four dispatches excluding the final dispatch (7 intermediate snapshots), 3 staging slots, 5 measured trials and 2 warmups. Each mode performs **33 GPU queue submissions** (32 compute and a separate final readback), and captures **1,835,008 bytes** (1.75 MiB) of intermediate checkpoints. All 70 measured checkpoint validations and ten final state verifications reported valid; no errors.
+
+| Mode | Measured times (ms) | Median elapsed | Mean elapsed | Median cumulative `await mapAsync` wait | Peak pending staging maps |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Blocking | 25.7, 20.4, 25.2, 25.4, 22.2 | 25.2 ms | 23.78 ms | 21.0 ms | 0 |
+| Overlapped | 6.4, 5.7, 6.9, 1.9, 2.0 | 5.7 ms | 4.58 ms | 1.8 ms | 3 |
+
+**Observed median ratio: 25.2 / 5.7 = 4.42x** (77.4% less elapsed wall time) for this workload and run. Overlapped mode schedules further command buffers and checkpoint copies before awaiting the earlier maps, with bounded staging-pool backpressure. The blocking mode serially waits after each checkpoint, exposing approximately 21 ms median accumulated await time.
+
+**Interpretation limits:** This is an end-to-end browser benchmark, not evidence of concurrent GPU copy/compute engines. WebGPU operations share one queue; CPU scheduling, JS execution, buffer lifecycle and mapping callbacks are included. `waitMs` measures wall time spent awaiting specific mapped promises, not exclusive driver/GPU idle time; shorter overlapped waits can occur because work completed before the await. Five samples each are useful evidence but not sufficient to assume universal speedup across devices, workloads, larger checkpoints or staging-slot counts. This exercise is task-level GPU state capture at dispatch boundaries, not arbitrary shader state migration.
+
+**Correction to previous entry:** The WGSL `target` reserved-word compilation error was fixed, and the corrected browser experiment **has now completed successfully**.
+
+### Recommended next performance experiments
+
+1. Run a staging-slot sweep with **1, 2, 3, 4 slots** under identical configuration to quantify backpressure and the memory/latency tradeoff.
+2. Sweep checkpoint frequency (every 1, 2, 4, 8, 16 dispatches) and sizes up to the bounded 500,000-element limit to model recovery-point age vs. checkpoint overhead.
+3. Add a no-intermediate-checkpoint baseline so the cost of each strategy can be compared with uninterrupted GPU compute.
+4. Separate wall-clock enqueue time, time until last snapshot is available, and final readback time; record device-loss/error events and validate snapshots.
+5. Eventually test actual source browser → transport → destination GPU restore/resume and recovery; do not equate optimized local capture with live cross-browser migration.
+
+### Native security research status
+
+The D3D12 Map failure/residency-lock and fence registration HRESULT candidates remain **unconfirmed**. This benchmark does not exercise those failure paths. The standalone C++ error-handling model is not a substitute for Dawn-native fault-injection regression tests.
