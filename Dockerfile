@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 WORKDIR /app
-COPY README.md index.html app.js ./
+COPY README.md index.html app.js residency.html experiments.js ./
 RUN adduser -D -u 10001 lab
 USER lab
 EXPOSE 7860
