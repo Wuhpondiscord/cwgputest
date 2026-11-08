@@ -172,3 +172,26 @@ There were **no reported browser API validation anomalies**, but no assertion ab
 2. Run repeated benchmarks in a second browser/backend and record `chrome://gpu` backend details manually if available.
 3. Move the D3D12 residency-lock and fence-HRESULT candidates into a native Dawn fault-injection harness; assert cleanup and non-hanging error signaling. Such tests cannot run from the static public browser lab.
 4. Avoid claiming exploitable memory corruption, a native CVE, or absence of security bugs based on expected public WebGPU validation alone.
+
+
+## Third-phase implementations: overlap test + D3D12 error-unwind model (2026-11-08)
+
+### Bounded overlapped WebGPU checkpoint experiment
+
+The existing `/dawn.html` now embeds `dawn-overlap.js`, providing a blocking vs. overlapped capture comparison. Default: 65,536 `u32` elements (256 KiB), 32 compute dispatches, 1 intermediate checkpoint every 4 dispatches (7 intermediate snapshots), 3 staging slots, 2 warmup rounds, 5 measured rounds. The shader adds 1 per element per dispatch; every checkpoint and the final readback are checked against expected GPU state.
+
+- Blocking: submit a compute pass + checkpoint copy, then await that staging buffer's `mapAsync` and verify it before submitting the next dispatch.
+- Overlapped: submit the same compute pass + copy, immediately request `mapAsync`, then enqueue later dispatches without awaiting that map. When all staging slots are in use, await and verify the oldest map, then reuse the slot. The pool has a strict configurable maximum of 1–4 staging buffers.
+- Both have the **same GPU dispatch count, compute submissions, and snapshot bytes**. This isolates the benefit of avoiding CPU-side blocking after each snapshot. All submissions still share one WebGPU queue; this test does **not prove** copy/compute hardware concurrency. 
+- The exported JSON contains trial order, exact snapshot validation, elapsed times, mapping wait time, copy-to-mapped latency, checkpoint count and bytes, in-flight map high-water mark and errors. Test size is bounded to 500,000 elements and 64 dispatches.
+- On failure, partial JSON remains exportable. A browser/device test run is needed before any performance claim.
+
+### Standalone C++ fault-unwind model
+
+`native-dawn-tests/fault_harness.cpp` implements deterministic injected success/failure for **modeled** residency lock → D3D12 Map and D3D12 fence event registration paths. Its seven assertions exercise the original control-flow concern, RAII cleanup, successful map lifetime, lock failure, ignored fence failure and checked fence failure/success.
+
+**Crucial distinction:** This is a *standalone native C++ test double*, not compiled against Dawn or Direct3D 12. Passing the model does not confirm a Dawn implementation defect, rule out one, or establish an exploitable native issue. Its purpose is to make the proposed correction's error-unwind contract executable on both Linux and Windows while a proper Dawn-specific injection seam is built.
+
+`.github/workflows/dawn-fault-model.yml` compiles and executes the standalone model on Windows and Linux. See `native-dawn-tests/README.md` for manual compilation and the still-open work needed to instrument actual `BufferD3D12.cpp::MapInternal` and `QueueD3D12.cpp::SetEventOnCompletion`. A second ignored fence HRESULT occurs in `BufferD3D12.cpp::SynchronizeBufferBeforeMapping` and should also be audited.
+
+**Pending:** actual Windows Dawn native fault-injection tests, real HRESULT/COM failure handling, and verified browser trial results. No upstream Dawn patches were made.
