@@ -31,3 +31,8 @@ Open http://localhost:7860. Docker: `docker build -t cwgpu-lab . && docker run -
 - Instrumented shader atomics add overhead and measure logical invocation counts, not hardware instructions.
 - Each test is capped at 500,000 float elements, matching the main cluster's bounded vector-add path.
 - GPU work is opt-in via the Run button; no hidden background computation.
+
+
+## Advanced experiment suite
+
+Open `/advanced.html` in the Space to run batched-versus-separate dispatches, synchronized readback comparisons, checkpoint chunk-count scaling (1/4/16/64), state-size scaling (65,536 to 500,000 elements), and checkpoint-frequency comparisons. Export results as JSON. The portable checkpoint export/import flow stores versioned float32 buffer data, completed dispatch count, and a SHA-256 digest; importing in another browser validates restored GPU state. It does not migrate arbitrary pipelines, browser state, or live running execution. All tests run locally in the browser; checkpoint transfer is manual.
