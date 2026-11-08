@@ -1,9 +1,9 @@
 const $ = id => document.getElementById(id);
 const state = { device: null, adapter: null, last: null };
-const MAP_READ = GPUBufferUsage?.MAP_READ ?? 1;
-const STORAGE = GPUBufferUsage?.STORAGE ?? 128;
-const COPY_SRC = GPUBufferUsage?.COPY_SRC ?? 4;
-const COPY_DST = GPUBufferUsage?.COPY_DST ?? 8;
+const MAP_READ = 1;
+const STORAGE = 128;
+const COPY_SRC = 4;
+const COPY_DST = 8;
 const shader = instrumented => `
 @group(0) @binding(0) var<storage, read> left: array<f32>;
 @group(0) @binding(1) var<storage, read> right: array<f32>;
