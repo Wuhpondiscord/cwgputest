@@ -85,3 +85,28 @@ The sequential path has one GPU submission plus `mapAsync` for each chunk. The b
 **Working design choice:** favor single-readback + CPU-side splitting when the goal is to package checkpoint data for transport, while retaining batched GPU copies as a possible optimization. Benchmark at larger buffer sizes and under actual transport conditions before locking in the architecture.
 
 **Next:** state-size scaling; checkpoint frequency; browser-to-browser portable import validation; eventual network migration test with end-to-end checkpoint transfer, restoration, and resumed compute.
+
+## Next-stage tests implemented (2026-11-08; awaiting measurements)
+
+The advanced WebGPU page now exposes three additional opt-in experiments:
+
+### State size × capture strategy
+
+Test four buffer sizes: 65,536 (256 KiB), 131,072 (512 KiB), 262,144 (1 MiB), and 500,000 float32 elements (~1.91 MiB). For each size, test a single sequential readback (1 chunk), 16 batched GPU copies (1 queue submission, 16 concurrent maps), and a single readback followed by 16 CPU-side chunks. Each run fully restores and validates GPU data. **Not yet measured**; comparison will help determine when data size begins to matter more than synchronization overhead. This is an application-imposed 500k-element bound, not a proven WebGPU limit.
+
+### Checkpoint frequency with full validation
+
+With configurable 2–64 dispatches, test no intermediate checkpoints, every 16, every 4, and every 1 dispatch. Count and verify intermediate snapshots, record bytes and aggregate time, and validate the final output. The final dispatch is **not** also counted as an intermediate checkpoint because every mode reads the final result already. As a result, 16 dispatches with interval 16 has zero intermediate checkpoints; choose 32 or 64 dispatches to test that interval meaningfully. This test measures GPU→CPU checkpoint capture only, not persistence or restore after every snapshot.
+
+### Restore and resume deterministic GPU execution
+
+Export a v1 portable checkpoint via the existing UI. In a second browser (or the same browser), select the checkpoint file, choose 1–64 additional dispatches, and run **Restore and continue computation**. The test checks version/format/dimensions, verifies SHA-256, writes the state to GPU memory, validates restored GPU contents, runs the configured additional WGSL dispatches, and compares output against original initialization plus total completed dispatches. Exportable result includes source and destination adapters, restoration time, resumed compute + final readback time, and mismatch counts. **Not yet measured**. Manual transfer is not a live distributed network migration.
+
+### Suggested execution order and interpretation
+
+1. State-size strategy comparison at defaults (5 trials, 2 warmups).
+2. Validated checkpoint frequency with **32 dispatches** to make the 16-step interval meaningful.
+3. Create portable checkpoint in browser/device A; import and resume in browser/device B. Share exported result (but never include private data in checkpoint files).
+4. With these measurements in hand, plan a WebRTC/WebSocket relay for end-to-end real-network checkpoint transfers, task pause/resume coordination, and recovery after peer disappearance.
+
+The tests are implemented and pushed, but successful deployment does **not** prove GPU runtime correctness across browser and hardware combinations.
