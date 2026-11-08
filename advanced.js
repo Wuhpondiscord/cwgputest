@@ -21,12 +21,63 @@ else for(let i=0;i<steps;i++){const enc=d.createCommandEncoder();step(d,p,source
 const final=await read(d,source,0,bytes);const elapsedMs=now()-start;const mismatches=check(final,initial,steps);return {mode,interval,elapsedMs:round(elapsedMs),checkpointMs:round(checkpointMs),intermediateBytes,finalBytes:bytes,mismatches,valid:mismatches===0}}finally{owned.forEach(x=>x.destroy())}}
 async function snapshot(d,source,n,parts){const bytes=n*4,chunks=[],start=now();for(let k=0;k<parts;k++){const startEl=Math.floor(k*n/parts),endEl=Math.floor((k+1)*n/parts);if(endEl===startEl)continue;chunks.push(await read(d,source,startEl*4,(endEl-startEl)*4))}const snapshotMs=now()-start;return {chunks,snapshotMs:round(snapshotMs)}}
 async function checkpoint(d,n,parts){const owned=[],bytes=n*4;try{const a=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned),b=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned),initial=init(n);d.queue.writeBuffer(a,0,initial);const s=await snapshot(d,a,n,parts);const t=now();let offset=0;for(const chunk of s.chunks){d.queue.writeBuffer(b,offset,chunk);offset+=chunk.byteLength}await d.queue.onSubmittedWorkDone();const restoreMs=now()-t;const v=now(),data=await read(d,b,0,bytes),verificationMs=now()-v,mismatches=check(data,initial,0);return {elements:n,bytes,parts,actualChunks:s.chunks.length,snapshotMs:s.snapshotMs,restoreMs:round(restoreMs),verificationMs:round(verificationMs),mismatches,valid:mismatches===0,snapshotMiBPerSec:round(bytes/1048576/(s.snapshotMs/1000))}}finally{owned.forEach(x=>x.destroy())}}
+
+function ranges(n,parts){const out=[];for(let k=0;k<parts;k++){const start=Math.floor(k*n/parts)*4,end=Math.floor((k+1)*n/parts)*4;if(end>start)out.push({offset:start,bytes:end-start})}return out}
+async function captureStrategies(d,source,n,parts,method){
+ const rangesList=ranges(n,parts),start=now();
+ let chunks=[],gpuSubmissions=0,gpuMapCalls=0,cpuSplitMs=0;
+ if(method==='sequential'){
+  for(const r of rangesList){chunks.push(await read(d,source,r.offset,r.bytes));gpuSubmissions++;gpuMapCalls++}
+ }else if(method==='batched-copies'){
+  const owned=[],stages=[];
+  try{
+   const enc=d.createCommandEncoder();
+   for(const r of rangesList){const stage=buf(d,r.bytes,U.COPY_DST|U.MAP_READ,owned);stages.push(stage);enc.copyBufferToBuffer(source,r.offset,stage,0,r.bytes)}
+   d.queue.submit([enc.finish()]);gpuSubmissions=1;
+   await Promise.all(stages.map(stage=>stage.mapAsync(U.MAP_READ)));gpuMapCalls=stages.length;
+   chunks=stages.map(stage=>{const copy=new Uint8Array(stage.getMappedRange().slice(0));stage.unmap();return copy});
+  }finally{owned.forEach(stage=>{try{stage.unmap()}catch{}stage.destroy()})}
+ }else if(method==='single-readback-cpu-split'){
+  const whole=await read(d,source,0,n*4);gpuSubmissions=1;gpuMapCalls=1;
+  const splitStart=now();chunks=rangesList.map(r=>whole.slice(r.offset,r.offset+r.bytes));cpuSplitMs=now()-splitStart;
+ }else throw Error('Unsupported capture method');
+ return {chunks,snapshotMs:round(now()-start),cpuSplitMs:round(cpuSplitMs),gpuSubmissions,gpuMapCalls};
+}
+async function captureComparison(d,n,parts,method){
+ const owned=[],bytes=n*4;
+ try{
+  const original=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned),restored=buf(d,bytes,U.STORAGE|U.COPY_DST|U.COPY_SRC,owned),expected=init(n);
+  d.queue.writeBuffer(original,0,expected);
+  const captured=await captureStrategies(d,original,n,parts,method);
+  const restoreStart=now();let offset=0;
+  for(const chunk of captured.chunks){d.queue.writeBuffer(restored,offset,chunk);offset+=chunk.byteLength}
+  await d.queue.onSubmittedWorkDone();
+  const restoreMs=round(now()-restoreStart);
+  const verifyStart=now(),out=await read(d,restored,0,bytes),verificationMs=round(now()-verifyStart);
+  const mismatches=check(out,expected,0);
+  return {method,parts,elements:n,bytes,actualChunks:captured.chunks.length,
+   snapshotMs:captured.snapshotMs,cpuSplitMs:captured.cpuSplitMs,gpuSubmissions:captured.gpuSubmissions,
+   gpuMapCalls:captured.gpuMapCalls,restoreMs,verificationMs,mismatches,valid:mismatches===0,
+   snapshotMiBPerSec:round(bytes/1048576/(captured.snapshotMs/1000))};
+ }finally{owned.forEach(b=>b.destroy())}
+}
+
 async function bench(label,runner){const c=config();$('status').textContent='Running '+label+'...';const {d,p,adapterInfo}=await device();try{if(c.elements*4>d.limits.maxStorageBufferBindingSize||c.elements*4>d.limits.maxBufferSize)throw Error('Requested buffer exceeds GPU limits');const records=[];for(let i=0;i<c.warmups+c.trials;i++){const rows=await runner(d,p,c,i);if(i>=c.warmups)for(const r of rows)records.push({...r,trial:i-c.warmups+1});$('status').textContent=label+': '+Math.max(0,i-c.warmups+1)+'/'+c.trials+' measured rounds';await pause()}const groups={};for(const r of records){const key=r.label??r.mode??String(r.parts);(groups[key]??=[]).push(r)}const summary={};for(const [key,rows] of Object.entries(groups))summary[key]={elapsedMs:stats(rows.map(r=>r.elapsedMs).filter(x=>x!==undefined)),snapshotMs:stats(rows.map(r=>r.snapshotMs).filter(x=>x!==undefined)),restoreMs:stats(rows.map(r=>r.restoreMs).filter(x=>x!==undefined)),checkpointMs:stats(rows.map(r=>r.checkpointMs).filter(x=>x!==undefined)),valid:rows.every(r=>r.valid),sampleCount:rows.length};latest={version:2,kind:label,createdAt:new Date().toISOString(),configuration:c,adapterInfo,summary,records,notes:['Wall-clock timings include browser scheduling and synchronization.','Restore time includes queued GPU writes and onSubmittedWorkDone.','Same-device checkpoints are not live cross-device migration.','Throughput figures include per-chunk overhead.']};$('summary').textContent=JSON.stringify(summary,null,2);$('details').textContent=JSON.stringify(records,null,2);$('export').disabled=false;$('status').textContent='Completed '+label+'. All valid: '+records.every(r=>r.valid)}finally{d.destroy()}}
 async function execute(button,fn){button.disabled=true;try{await fn()}catch(e){$('status').textContent='Failed: '+String(e);console.error(e)}finally{button.disabled=false}}
 $('batch').onclick=()=>execute($('batch'),()=>bench('dispatch comparison',async(d,p,c,i)=>{const modes=i%2?['readback-each','batched','separate']:['separate','batched','readback-each'];const rows=[];for(const mode of modes)rows.push({...await compute(d,p,c.elements,c.dispatches,mode),label:mode});return rows}));
 $('chunks').onclick=()=>execute($('chunks'),()=>bench('chunk scaling',async(d,p,c,i)=>{const parts=i%2?[64,16,4,1]:[1,4,16,64];const rows=[];for(const count of parts)rows.push({...await checkpoint(d,c.elements,count),label:count+' chunks'});return rows}));
 $('sizes').onclick=()=>execute($('sizes'),()=>bench('state scaling',async(d,p,c,i)=>{const sizes=[65536,131072,262144,500000];if(i%2)sizes.reverse();const rows=[];for(const n of sizes){if(n*4>d.limits.maxStorageBufferBindingSize)throw Error('GPU buffer limit too small for size test');rows.push({...await checkpoint(d,n,4),label:n+' elements'})}return rows}));
 $('frequency').onclick=()=>execute($('frequency'),()=>bench('checkpoint frequency',async(d,p,c,i)=>{const intervals=[0,16,4,1];if(i%2)intervals.reverse();const rows=[];for(const interval of intervals)rows.push({...await compute(d,p,c.elements,c.dispatches,'frequency',interval),label:interval===0?'none':'every '+interval});return rows}));
+$('capturecompare').onclick=()=>execute($('capturecompare'),()=>bench('checkpoint capture strategy comparison',async(d,p,c,i)=>{
+ const methods=['sequential','batched-copies','single-readback-cpu-split'];
+ const cases=[];for(const parts of [1,4,16,64])for(const method of methods)cases.push({parts,method});
+ const rotated=cases.slice(i%cases.length).concat(cases.slice(0,i%cases.length));
+ if(i%2)rotated.reverse();
+ const rows=[];
+ for(const item of rotated){rows.push({...await captureComparison(d,c.elements,item.parts,item.method),label:item.method+' / '+item.parts+' chunks'})}
+ return rows;
+}));
+
 function download(name,body,type){const url=URL.createObjectURL(new Blob([body],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 function base64(bytes){let result='';for(let i=0;i<bytes.length;i+=8192)result+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(result)}
 function unbase64(s){const raw=atob(s),out=new Uint8Array(raw.length);for(let i=0;i<raw.length;i++)out[i]=raw.charCodeAt(i);return out}
