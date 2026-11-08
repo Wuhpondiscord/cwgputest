@@ -73,3 +73,33 @@ All probes are opt-in, local, capped to 16 KiB per buffer, and exported as JSON 
 ## Research integrity
 
 No code changes were made to upstream `google/dawn`. The research lab is browser JavaScript served as static files; it cannot access private native pointers, D3D12 HRESULTs, allocator counters or GPU driver internals from ordinary WebGPU. These native claims remain open hypotheses until specifically tested.
+
+
+## First browser regression result (2026-11-08, Chrome 157, NVIDIA Lovelace)
+
+User-provided run: `2026-11-08T17:12:30.617Z` through `17:12:30.737Z`; browser `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36`; adapter reports vendor `nvidia`, architecture `lovelace`. The WebGPU adapter metadata does **not** identify which native backend Chrome selected; do not assume D3D12 from these fields alone.
+
+**9/9 bounded browser-facing probes reported pass; 0 unexpected acceptances; 0 inconclusive.**
+
+| Probe | Outcome | Reported elapsed |
+| --- | --- | ---: |
+| Copy beyond source-buffer bounds | Correctly rejected | 1.6 ms |
+| Non-4-byte-aligned buffer copy | Correctly rejected | 0.7 ms |
+| Out-of-range `mapAsync` | Correctly rejected | 0.8 ms |
+| Misaligned `mapAsync` offset (4 bytes, required 8) | Correctly rejected | 0.2 ms |
+| Second `mapAsync` on already mapped buffer | Correctly rejected | 0.3 ms |
+| Destroy during pending `mapAsync` | Aborted with `AbortError` | 0.1 ms |
+| Reuse 16-KiB staging buffer for 3 roundtrips | Exact bytes validated | 9.7 ms |
+| 12 sequential 4-KiB readbacks (12 submits + serial maps) | Exact bytes validated | 31.3 ms |
+| 12 batched 4-KiB readbacks (1 submit + concurrent maps) | Exact bytes validated | 2.9 ms |
+
+One-run batched speedup: `31.3 / 2.9 = 10.79x` (90.7% shorter elapsed). Both paths read 48 KiB in total; synchronization schedule differs. **Do not equate this difference to pure PCIe transfer speed or Dawn-only overhead.** Measurements are single-pass and order-dependent, so next experiment should repeat warmups/trials and alternate the order of the two modes.
+
+Expected validation and map cancellation **do not test the native D3D12 failure-injection hypotheses**. The mapping residency-lock and unchecked fence HRESULT candidates remain open; no evidence of memory corruption or exploitable vulnerability was produced. The device's native backend and driver version were not recorded.
+
+### Follow-up priorities informed by these results
+
+1. Add 5–20-trial alternating-order performance comparison with summaries and bounded work, plus browser/device metadata and failure counts. Compare 1, 4, 12 and 32 buffers to separate per-map and submission overhead.
+2. Add safe mapping lifecycle transitions: `unmap` after successful read, `destroy` before/after completed maps, and expected rejection for duplicate pending mapping, with clean isolated devices on errors.
+3. For native security hypotheses, use a local Dawn native build with injected D3D12 mapping failure and instrumented lock balancing; then injected fence event registration failure. Browser JavaScript cannot verify their internal invariants.
+4. Audit native write-texture validation and alignment preconditions with focused unit tests and fuzzing. No oversize or malformed-wire stress testing belongs in the public Space.
