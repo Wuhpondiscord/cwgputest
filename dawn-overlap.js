@@ -4,9 +4,9 @@ const USAGE={MAP_READ:1,COPY_SRC:4,COPY_DST:8,STORAGE:128};
 const stamp=()=>performance.now(),r3=x=>Math.round(x*1000)/1000;
 function summarize(xs){if(!xs.length)return null;const a=xs.slice().sort((x,y)=>x-y);return {median:r3(a.length%2?a[(a.length-1)/2]:(a[a.length/2-1]+a[a.length/2])/2),mean:r3(a.reduce((x,y)=>x+y,0)/a.length),min:r3(a[0]),max:r3(a.at(-1))}}
 const W=`@group(0) @binding(0) var<storage,read> source:array<u32>;
-@group(0) @binding(1) var<storage,read_write> target:array<u32>;
+@group(0) @binding(1) var<storage,read_write> outputState:array<u32>;
 @compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id:vec3<u32>){
- if(id.x<arrayLength(&target)){target[id.x]=source[id.x]+1u;}
+ if(id.x<arrayLength(&outputState)){outputState[id.x]=source[id.x]+1u;}
 }`;
 function initial(n){const a=new Uint32Array(n);for(let i=0;i<n;i++)a[i]=i%8192;return a}
 function verify(stage,n,steps){const bytes=stage.getMappedRange(),a=new Uint32Array(bytes);for(let i=0;i<n;i++)if(a[i]!==((i%8192)+steps))throw Error('checkpoint mismatch at '+i+' after '+steps+' steps')}
@@ -126,7 +126,7 @@ O('overlapRun').onclick=async()=>{
   overlapReport.summary.medianSpeedup=r3(overlapReport.summary.blocking.elapsedMs.median/
    overlapReport.summary.overlapped.elapsedMs.median);
   O('overlapStatus').textContent='Complete: '+overlapReport.records.length+' measured runs; all checkpoint contents verified.';
- }catch(e){O('overlapStatus').textContent='Stopped: '+String(e)+' — partial JSON export available'}
+ }catch(e){overlapReport.errors.push({stage:'setup-or-execution',error:String(e)});O('overlapStatus').textContent='Stopped: '+String(e)+' — partial JSON export available'}
  finally{d?.destroy();overlapReport.finishedAt=new Date().toISOString();
   O('overlapResults').textContent=JSON.stringify(overlapReport,null,2);O('overlapExport').disabled=false;O('overlapRun').disabled=false}
 };
