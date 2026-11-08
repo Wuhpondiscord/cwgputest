@@ -110,3 +110,50 @@ Export a v1 portable checkpoint via the existing UI. In a second browser (or the
 4. With these measurements in hand, plan a WebRTC/WebSocket relay for end-to-end real-network checkpoint transfers, task pause/resume coordination, and recovery after peer disappearance.
 
 The tests are implemented and pushed, but successful deployment does **not** prove GPU runtime correctness across browser and hardware combinations.
+
+
+## Automated full-suite results (2026-11-08, user run)
+
+The one-click suite reported **308/308 individual case executions completed** across 8 sections (including warmups), zero failures, and all measured cases valid. Configuration: 65,536 elements, 16 dispatches, 5 measured trials, 2 warmups. The validated checkpoint-frequency section separately used 32 dispatches. This is a single browser/device run; cross-browser checkpoint transport was **not** exercised.
+
+### End-to-end dispatch latency (medians)
+
+| Batch in one encoder | Separate submissions | Readback every dispatch |
+| ---: | ---: | ---: |
+| 3.3 ms | 4.0 ms | 54.7 ms |
+
+Readback-each was 16.58x slower than batched, by median wall-clock time.
+
+### Capture strategy scaling by buffer size (median snapshot ms)
+
+| State size | One readback | 16 batched copies | One readback and 16 CPU-side chunks |
+| --- | ---: | ---: | ---: |
+| 256 KiB | 3.7 | 2.9 | 3.0 |
+| 512 KiB | 1.5 | 4.3 | 3.3 |
+| 1 MiB | 3.7 | 3.5 | 4.6 |
+| ~1.91 MiB | 4.8 | 4.1 | 6.7 |
+
+These timings are noisy and not consistently monotonic. Small differences cannot establish an optimal method. The older four-independent-readback state-size test had 14.4 ms median snapshot time at 500,000 elements, versus 4.1–6.7 ms for the optimized methods. These are different benchmark sections measured at different points in a long suite.
+
+### Validated checkpoint frequency with 32 dispatches
+
+| Frequency | Intermediate checkpoints | Intermediate bytes | Median elapsed | Median checkpoint time |
+| --- | ---: | ---: | ---: | ---: |
+| None | 0 | 0 | 9.4 ms | 0 ms |
+| Every 16 | 1 | 256 KiB | 7.5 ms | 3.7 ms |
+| Every 4 | 7 | 1.75 MiB | 27.0 ms | 22.2 ms |
+| Every 1 | 31 | 7.75 MiB | 100.7 ms | 94.8 ms |
+
+The every-16 median total is less than the no-checkpoint median, illustrating measurement noise: **do not infer that taking a checkpoint speeds up execution**. The overall trend strongly disfavors excessive synchronization. This experiment excludes a redundant intermediate checkpoint on the final dispatch; all modes share final readback.
+
+### Same-device restore and resumed execution
+
+Five measured restore-and-resume trials passed. Median GPU restore time was **0.3 ms** for the 256 KiB buffer. The suite checked a CPU serialization round-trip, a second GPUBuffer on the same adapter, and the result after additional WGSL dispatches. This demonstrates **deterministic computation resumption**, not arbitrary live state migration or network transfer.
+
+### Interpretation and remaining work
+
+- A single readback and batched staging copies both avoid the repeated independent map/submit overhead.
+- Avoid compulsory CPU synchronization after every GPU operation; keep state on GPU and schedule checkpoints judiciously.
+- To evaluate realistic cluster migration, test network transport, another physical adapter, resumed execution consistency, and larger memory sizes (beyond the current 500,000-element application bound).
+- The one-click automated suite and its result do not demonstrate cross-device migration.
+- Future tests should increase trials, capture adapter/browser versions and workload conditions, and report variability rather than selecting the fastest single run.
