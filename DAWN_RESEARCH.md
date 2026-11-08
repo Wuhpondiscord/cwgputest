@@ -129,3 +129,46 @@ All record `pass`, `unexpected-acceptance`, or `inconclusive` with observed erro
 ### Still required for native candidates
 
 A local Windows/Dawn D3D12 build with controllable `ID3D12Resource::Map` and `ID3D12Fence::SetEventOnCompletion` failure is required to determine whether the suspected error-handling defects are real and observable. Native test coverage should inspect resource-lock counters and bounded waiter error propagation respectively. No native fault injection has been executed or claimed.
+
+
+## Second browser regression run — extended performance and lifecycle (2026-11-08)
+
+Source: user-exported `dawn-followup` version 2; started `2026-11-08T17:17:52.068Z`, finished `17:17:53.190Z`. Browser: Chrome 157 on Windows 10/11 user-agent platform `Windows NT 10.0`; adapter vendor `nvidia`, architecture `lovelace`, native graphics backend **not independently identified**. Configuration: 2 warmup rounds; 5 measured rounds per case; 4 KiB staging buffers; 1/4/12/32 buffer counts; sequential or batched; alternating mode and size ordering.
+
+**40/40 measured performance cases validated, zero recorded failures. Five of five extended mapping-lifecycle checks passed, zero unexpected acceptances, zero inconclusive.**
+
+### Median end-to-end readback latency
+
+| 4 KiB buffers | Total bytes | Sequential submits | Batched submits | Sequential median | Batched median | Ratio, sequential/batched |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 4 KiB | 1 | 1 | 2.7 ms | 3.6 ms | 0.75x |
+| 4 | 16 KiB | 4 | 1 | 14.2 ms | 2.8 ms | 5.07x |
+| 12 | 48 KiB | 12 | 1 | 32.0 ms | 3.1 ms | 10.32x |
+| 32 | 128 KiB | 32 | 1 | 80.3 ms | 4.1 ms | 19.59x |
+
+Measured `p95` (5 samples; effectively the observed maximum):
+- 1 buffer: sequential 3.4 ms / batched 4.1 ms.
+- 4 buffers: sequential 14.8 ms / batched 3.1 ms.
+- 12 buffers: sequential 42.4 ms / batched 4.0 ms.
+- 32 buffers: sequential 92.9 ms / batched 4.4 ms.
+
+At 32 buffers, reduction vs. sequential median is `(80.3-4.1)/80.3 ≈ 94.9%`. At 1 buffer, methods have the same count of submissions and mapping calls; small timing differences should not be interpreted as fundamental performance differences. The general trend reflects serial synchronization overhead (GPU submission + wait/map for each buffer); the experiment does **not** isolate Dawn-only, wire-only, or hardware DMA times. Five trials and ordered execution remain insufficient to define universal cross-device performance.
+
+### Lifecycle observations (5/5 passed)
+
+| Case | Browser-observed result |
+| --- | --- |
+| `unmap()` with pending `mapAsync()` | Promise rejected with `AbortError` |
+| Duplicate pending `mapAsync()` | Second request rejected with `OperationError`; first completed |
+| Completed map → unmap → remap | Two exact 16-byte read cycles passed |
+| Destroy after completed mapping | `getMappedRange()` rejected with `OperationError` |
+| `mapAsync()` after destruction | Rejected with `OperationError` and validation error |
+
+There were **no reported browser API validation anomalies**, but no assertion about D3D12 residency-lock balance or fence HRESULT can be drawn from these cases. Their native error paths remain open hypotheses, not confirmed vulnerabilities.
+
+### Updated next steps
+
+1. Benchmark GPU-resident multi-dispatch execution with staged periodic asynchronous checkpointing and triple-buffer staging pools, while keeping a bounded memory budget. Distinguish capture throughput from restore cost and end-to-end migration.
+2. Run repeated benchmarks in a second browser/backend and record `chrome://gpu` backend details manually if available.
+3. Move the D3D12 residency-lock and fence-HRESULT candidates into a native Dawn fault-injection harness; assert cleanup and non-hanging error signaling. Such tests cannot run from the static public browser lab.
+4. Avoid claiming exploitable memory corruption, a native CVE, or absence of security bugs based on expected public WebGPU validation alone.
