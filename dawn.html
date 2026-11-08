@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dawn / WebGPU safety and performance research</title>
+<style>:root{color-scheme:dark;font:15px system-ui;background:#0b1220;color:#e6edf7}main{max-width:1050px;margin:30px auto;padding:0 18px}section{background:#121e30;border:1px solid #304059;border-radius:14px;padding:18px;margin:16px 0}button{background:#3b82f6;color:white;border:0;border-radius:8px;padding:11px 14px;cursor:pointer;margin-right:8px}button:disabled{opacity:.5}pre{white-space:pre-wrap;overflow:auto;background:#07101e;padding:12px;border-radius:8px;max-height:700px}small,p{color:#b2c2d5}a{color:#93c5fd}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}code{color:#b9dbff}</style></head>
+<body><main><a href="./advanced.html">Advanced benchmark</a> · <a href="./">Home</a>
+<h1>Dawn / WebGPU: bounded regression probes</h1>
+<p>Runs normal, deliberately invalid, and lifecycle WebGPU API calls against the browser implementation. All tests run locally, use tiny buffers and no intentional GPU hangs or memory exhaustion. Tests check whether invalid operations are rejected safely; they do <strong>not</strong> verify C++ memory safety or confirm a Dawn vulnerability.</p>
+<section><h2>Run validation and lifecycle probes</h2><p>Includes buffer-copy bounds, mapAsync ranges and alignment, competing mappings, destroy while mapping, staging-buffer reuse, and batched vs. sequential small readbacks. Exportable records include errors, expected behavior, timing, and environment.</p>
+<div class="row"><button id="run">Run Dawn-facing browser probes</button><button id="export" disabled>Export research JSON</button></div>
+<small>No network requests. Limited to 16 KiB buffers, 12 iterations of readback comparison, and short bounded waits. Errors are classified as expected rejection / unexpected acceptance / inconclusive.</small></section>
+<section><h2>Scope and limitations</h2><p>The suspected D3D12 native mapping-error residency lock issue requires injected <code>ID3D12Resource::Map</code> failure and residency-lock inspection in a local Dawn build; browser JavaScript cannot test that invariant directly. D3D12 <code>SetEventOnCompletion</code> HRESULT handling likewise needs a native failure-injection test. Arithmetic in <code>DynamicUploader::Reserve</code> and <code>CopyTextureData</code> requires native boundary/validation tests; this page deliberately does not attempt huge sizes or malformed wire messages.</p><p>Reference notes: <a href="./DAWN_RESEARCH.md">Dawn research log</a>.</p></section>
+<section><h2>Status</h2><pre id="status">Ready.</pre></section>
+<section><h2>Results</h2><pre id="results">No results yet.</pre></section>
+<script type="module" src="./dawn-probes.js"></script></main></body></html>
