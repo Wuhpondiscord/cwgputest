@@ -195,3 +195,10 @@ The existing `/dawn.html` now embeds `dawn-overlap.js`, providing a blocking vs.
 `.github/workflows/dawn-fault-model.yml` compiles and executes the standalone model on Windows and Linux. See `native-dawn-tests/README.md` for manual compilation and the still-open work needed to instrument actual `BufferD3D12.cpp::MapInternal` and `QueueD3D12.cpp::SetEventOnCompletion`. A second ignored fence HRESULT occurs in `BufferD3D12.cpp::SynchronizeBufferBeforeMapping` and should also be audited.
 
 **Pending:** actual Windows Dawn native fault-injection tests, real HRESULT/COM failure handling, and verified browser trial results. No upstream Dawn patches were made.
+
+
+## Third browser follow-up (2026-11-08T17:25 UTC) and overlap compile fix
+
+The user reran the 40-sample follow-up on Chrome 157 / NVIDIA Lovelace (5 trials, 2 warmups). **40/40 readback cases valid, all five mapping lifecycle tests passed, no failures**. Medians (sequential vs batched): 1 buffer 4.0/3.2 ms (1.25x); 4 buffers 12.3/3.3 ms (3.73x); 12 buffers 33.8/3.0 ms (11.27x); 32 buffers 88.7/3.2 ms (27.72x). The 32-buffer improvement remains robust across both runs, but outliers and browser scheduling affect per-run ratios.
+
+The first attempt to run the new `dawn-checkpoint-overlap` experiment stopped at shader compilation with `Error: 'target' is a reserved keyword`. No overlap measurements were recorded. `dawn-overlap.js` was corrected to use WGSL identifier `outputState`; setup errors are now recorded in exported report `errors`. The corrected shader has **not yet been validated by a browser run**.
