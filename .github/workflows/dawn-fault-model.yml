@@ -1,0 +1,32 @@
+name: Dawn fault-model C++ regression
+on:
+  push:
+    paths:
+      - 'native-dawn-tests/**'
+      - '.github/workflows/dawn-fault-model.yml'
+  pull_request:
+    paths:
+      - 'native-dawn-tests/**'
+      - '.github/workflows/dawn-fault-model.yml'
+  workflow_dispatch:
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile standalone error-unwind model
+        run: c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic native-dawn-tests/fault_harness.cpp -o /tmp/dawn-fault-harness
+      - name: Run seven deterministic cases
+        run: /tmp/dawn-fault-harness
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Visual Studio compiler
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile standalone fault model
+        shell: cmd
+        run: cl /nologo /std:c++17 /EHsc /W4 native-dawn-tests\fault_harness.cpp /Fe:fault_harness.exe
+      - name: Run seven deterministic cases
+        shell: cmd
+        run: fault_harness.exe
