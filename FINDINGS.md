@@ -48,7 +48,7 @@ For 1, 4, 16 and 64 chunks, compare identical buffer contents and exact post-res
 
 Metrics: end-to-end snapshotMs, restoreMs, verificationMs, cpuSplitMs, gpuSubmissions, gpuMapCalls, snapshotMiBPerSec and element-level validation. Trials alternate/reverse configuration order to reduce order bias.
 
-**Hypothesis, not established finding:** batched copies or CPU-side chunking should remove most of the 64-chunk sequential readback penalty. New run data is needed to confirm this.
+**Result:** The hypothesis was supported in the next 60-run browser-local experiment documented below. This does not establish rankings across hardware or large states.
 
 ## Architectural implications and limitations
 
@@ -61,8 +61,27 @@ Metrics: end-to-end snapshotMs, restoreMs, verificationMs, cpuSplitMs, gpuSubmis
 
 ## Next measurement sequence
 
-1. Run the capture strategy comparison at defaults (65,536 elements, 5 trials, 2 warmups). Export JSON.
+1. Completed: capture strategy comparison at defaults (65,536 elements, 5 trials, 2 warmups). See results below.
 2. Run larger state scaling to see when bytes, not synchronization, dominate.
 3. Run checkpoint frequency experiment to quantify cost against uninterrupted compute.
 4. Export a portable checkpoint and restore on another browser/device; report both adapters and validation.
 5. Later: implement a network relay and progress-bearing resumable tasks; measure complete migration time and continued output correctness.
+
+## Capture strategy comparison results (2026-11-08)
+
+Source: user-supplied result from the new **Run capture strategy comparison** experiment, 65,536 float32 elements (256 KiB), 5 measured trials per combination, 2 warmups. All 60 measured runs passed full element-level restoration validation (0 mismatches).
+
+| Chunk count | Sequential readback median | Batched GPU copies median | Single readback + CPU split median |
+| --- | ---: | ---: | ---: |
+| 1 | 2.8 ms | 2.8 ms | 3.1 ms |
+| 4 | 13.3 ms | 2.8 ms | 3.9 ms |
+| 16 | 42.4 ms | 3.7 ms | 2.7 ms |
+| 64 | 182.1 ms | 4.1 ms | 3.0 ms |
+
+At 64 chunks: batching GPU copies was **44.4x faster** than independent sequential readbacks (182.1 / 4.1); one full GPU readback followed by CPU-side splitting was **60.7x faster** (182.1 / 3.0). Median restore times across the configurations were approximately 0.2–0.4 ms. These are browser wall-clock measurements, not raw GPU memory bandwidth.
+
+The sequential path has one GPU submission plus `mapAsync` for each chunk. The batched path has one GPU submission for all copies but maps multiple staging buffers concurrently. CPU splitting uses one GPU submission and map, then splits CPU-owned bytes. The 64-chunk outcome supports the interpretation that serial GPU synchronization drives most of the previous slowdown. The data does **not** prove that CPU splitting is generally faster than batched mapping; differences are small and five trials per group are noisy. Nor does it establish a best network packet size.
+
+**Working design choice:** favor single-readback + CPU-side splitting when the goal is to package checkpoint data for transport, while retaining batched GPU copies as a possible optimization. Benchmark at larger buffer sizes and under actual transport conditions before locking in the architecture.
+
+**Next:** state-size scaling; checkpoint frequency; browser-to-browser portable import validation; eventual network migration test with end-to-end checkpoint transfer, restoration, and resumed compute.
