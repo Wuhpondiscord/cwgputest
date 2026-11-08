@@ -46,3 +46,8 @@ See [FINDINGS.md](./FINDINGS.md) for dated, user-measured results, methodology, 
 ## One-click full test suite
 
 On `/advanced.html`, select **Run full test suite** to run every browser-local benchmark group sequentially: dispatch batching/readback, legacy chunk/size/frequency scaling, checkpoint capture strategies, larger-state strategies, validated checkpoint frequency, and same-device checkpoint integrity/restore/resumed compute. The trial/warmup controls apply to each case. At defaults (5 trials, 2 warmups) there are 308 case executions (including warmups). The every-16 checkpoint frequency case uses at least 32 dispatches. Progress, per-case correctness, timing summaries, raw results, device metadata, and failures are included in a single exportable JSON report; partial results remain exportable on failure. The suite has no network connection and does not automatically test a second physical device. Manual cross-device checkpoint export/import is available separately.
+
+
+## Dawn implementation and security regression research
+
+Open `/dawn.html` for opt-in, bounded browser-WebGPU validation, buffer mapping lifecycle, and small readback-scheduling probes. Export the test results as JSON. See [DAWN_RESEARCH.md](./DAWN_RESEARCH.md) for native source audit candidates, confidence, caveats and priority experiments. These probes **cannot confirm** the proposed native D3D12 memory residency/fence error-handling issues; those require native Dawn builds with controlled fault injection. Do not interpret an expected validation error as a vulnerability or a successful probe as proof of memory safety.
